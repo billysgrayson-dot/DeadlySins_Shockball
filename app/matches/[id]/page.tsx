@@ -34,6 +34,8 @@ interface MatchInfo {
 interface PlayerMatchStat {
   player_id: string
   player_name: string
+  team_id: string
+  is_home_team: boolean
   goals: number
   shots: number
   tackles: number
@@ -107,31 +109,27 @@ async function getMatchData(matchId: string) {
     competition_name: competitionName,
   }
 
-  // DS player stats in this match
+  // All player stats for this match (both teams)
   const { data: allStats } = await db
     .from('player_match_stats')
-    .select('player_id, player_name, goals, shots, tackles, passes, blocks, fouls, was_injured')
+    .select('player_id, player_name, team_id, is_home_team, goals, shots, tackles, passes, blocks, fouls, was_injured')
     .eq('match_id', matchId)
 
-  // Identify which players are DS players by checking career stats table
-  const { data: dsPlayers } = await db
-    .from('player_career_stats')
-    .select('player_id')
-    .eq('team_id', DS_TEAM_ID)
-  const dsPlayerIds = new Set((dsPlayers ?? []).map((p) => p.player_id))
-
-  const dsStats: PlayerMatchStat[] = (allStats ?? []).filter((s) => dsPlayerIds.has(s.player_id))
+  const allPlayerStats: PlayerMatchStat[] = allStats ?? []
+  const dsStats = allPlayerStats.filter((s) => s.team_id === DS_TEAM_ID)
 
   if (!matchData.replay_fetched) {
-    return { match, dsStats, energySummaries: [], hasReplay: false }
+    return { match, allPlayerStats, dsStats, energySummaries: [], hasReplay: false }
   }
 
-  // Energy data for DS players in this match
+  // Energy data — DS players only (we only track DS energy)
+  const dsPlayerIds = dsStats.map((s) => s.player_id)
+
   const { data: allSnapshots } = await db
     .from('energy_snapshots')
     .select('player_id, turn, energy')
     .eq('match_id', matchId)
-    .in('player_id', dsStats.map((s) => s.player_id))
+    .in('player_id', dsPlayerIds)
     .order('player_id')
     .order('turn', { ascending: true })
 
@@ -140,7 +138,7 @@ async function getMatchData(matchId: string) {
     .from('player_energy_thresholds')
     .select('player_id, min_energy_reached, first_turn_below_30, first_turn_below_20, first_turn_below_10')
     .eq('match_id', matchId)
-    .in('player_id', dsStats.map((s) => s.player_id))
+    .in('player_id', dsPlayerIds)
 
   type ThresholdRow = { player_id: string; min_energy_reached: number | null; first_turn_below_30: number | null; first_turn_below_20: number | null; first_turn_below_10: number | null }
   const thresholdMap: Record<string, ThresholdRow> = Object.fromEntries(
@@ -176,7 +174,7 @@ async function getMatchData(matchId: string) {
     return b.final_energy - a.final_energy
   })
 
-  return { match, dsStats, energySummaries, hasReplay: true }
+  return { match, allPlayerStats, dsStats, energySummaries, hasReplay: true }
 }
 
 // ============================================================
@@ -341,7 +339,7 @@ export default async function MatchPage({ params }: { params: Promise<{ id: stri
 
   if (!data) notFound()
 
-  const { match, dsStats, energySummaries, hasReplay } = data
+  const { match, allPlayerStats, dsStats, energySummaries, hasReplay } = data
 
   const isHome = match.home_team_id === DS_TEAM_ID
   const dsScore = isHome ? match.home_score : match.away_score
@@ -461,58 +459,87 @@ export default async function MatchPage({ params }: { params: Promise<{ id: stri
             </section>
           )}
 
-          {/* Player stats table */}
-          {dsStats.length > 0 && (
+          {/* Player stats — both teams */}
+          {allPlayerStats.length > 0 && (
             <section>
               <h2 className="mb-4 text-sm font-semibold uppercase tracking-widest text-gray-500">
-                DS Player Stats
+                Player Stats
               </h2>
-              <div className="rounded-lg border border-gray-800 overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-gray-800 bg-gray-900">
-                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wide">Player</th>
-                        <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wide">G</th>
-                        <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wide">Sh</th>
-                        <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wide">Tk</th>
-                        <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wide">Ps</th>
-                        <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wide">Bl</th>
-                        <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wide">Fo</th>
-                        <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wide">Inj</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-800">
-                      {dsStats
-                        .sort((a, b) => b.goals - a.goals || b.shots - a.shots)
-                        .map((s) => (
-                          <tr key={s.player_id} className="bg-gray-950 hover:bg-gray-900 transition-colors">
-                            <td className="px-4 py-3">
-                              <Link
-                                href={`/players/${s.player_id}`}
-                                className="text-gray-200 hover:text-white transition-colors"
-                              >
-                                {s.player_name}
-                              </Link>
-                            </td>
-                            <td className="px-4 py-3 text-center text-gray-300">{s.goals}</td>
-                            <td className="px-4 py-3 text-center text-gray-300">{s.shots}</td>
-                            <td className="px-4 py-3 text-center text-gray-300">{s.tackles}</td>
-                            <td className="px-4 py-3 text-center text-gray-300">{s.passes}</td>
-                            <td className="px-4 py-3 text-center text-gray-300">{s.blocks}</td>
-                            <td className="px-4 py-3 text-center text-gray-300">{s.fouls}</td>
-                            <td className="px-4 py-3 text-center">
-                              {s.was_injured ? (
-                                <span className="text-red-400 text-xs font-medium">Yes</span>
+              <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+                {[
+                  { teamId: match.home_team_id, teamName: match.home_team_name, isHome: true },
+                  { teamId: match.away_team_id, teamName: match.away_team_name, isHome: false },
+                ].map(({ teamId, teamName, isHome: teamIsHome }) => {
+                  const teamStats = allPlayerStats
+                    .filter((s) => s.team_id === teamId)
+                    .sort((a, b) => b.goals - a.goals || b.shots - a.shots)
+                  const isDS = teamId === DS_TEAM_ID
+                  return (
+                    <div key={teamId}>
+                      <h3 className="mb-2 text-sm font-medium text-gray-400">
+                        {teamIsHome ? '🏠 ' : '✈️ '}{teamName}
+                        {isDS && <span className="ml-2 text-xs text-emerald-600">(us)</span>}
+                      </h3>
+                      <div className="rounded-lg border border-gray-800 overflow-hidden">
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-sm">
+                            <thead>
+                              <tr className="border-b border-gray-800 bg-gray-900">
+                                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wide">Player</th>
+                                <th className="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wide">G</th>
+                                <th className="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wide">Sh</th>
+                                <th className="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wide">Tk</th>
+                                <th className="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wide">Ps</th>
+                                <th className="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wide">Bl</th>
+                                <th className="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wide">Fo</th>
+                                <th className="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wide">Inj</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-gray-800">
+                              {teamStats.length === 0 ? (
+                                <tr>
+                                  <td colSpan={8} className="px-3 py-4 text-center text-xs text-gray-600 italic">
+                                    No stats available
+                                  </td>
+                                </tr>
                               ) : (
-                                <span className="text-gray-600">—</span>
+                                teamStats.map((s) => (
+                                  <tr key={s.player_id} className="bg-gray-950 hover:bg-gray-900 transition-colors">
+                                    <td className="px-3 py-2">
+                                      {isDS ? (
+                                        <Link
+                                          href={`/players/${s.player_id}`}
+                                          className="text-gray-200 hover:text-white transition-colors"
+                                        >
+                                          {s.player_name}
+                                        </Link>
+                                      ) : (
+                                        <span className="text-gray-400">{s.player_name}</span>
+                                      )}
+                                    </td>
+                                    <td className="px-3 py-2 text-center text-gray-300">{s.goals}</td>
+                                    <td className="px-3 py-2 text-center text-gray-300">{s.shots}</td>
+                                    <td className="px-3 py-2 text-center text-gray-300">{s.tackles}</td>
+                                    <td className="px-3 py-2 text-center text-gray-300">{s.passes}</td>
+                                    <td className="px-3 py-2 text-center text-gray-300">{s.blocks}</td>
+                                    <td className="px-3 py-2 text-center text-gray-300">{s.fouls}</td>
+                                    <td className="px-3 py-2 text-center">
+                                      {s.was_injured ? (
+                                        <span className="text-red-400 text-xs font-medium">Yes</span>
+                                      ) : (
+                                        <span className="text-gray-600">—</span>
+                                      )}
+                                    </td>
+                                  </tr>
+                                ))
                               )}
-                            </td>
-                          </tr>
-                        ))}
-                    </tbody>
-                  </table>
-                </div>
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
               </div>
               <p className="mt-2 text-xs text-gray-600">
                 G = Goals · Sh = Shots · Tk = Tackles · Ps = Passes · Bl = Blocks · Fo = Fouls · Inj = Injured
