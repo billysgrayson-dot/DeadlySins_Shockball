@@ -1,0 +1,41 @@
+{
+  "name": "Deadly Sins Shockball Analytics",
+  "image": "mcr.microsoft.com/devcontainers/typescript-node:22",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "22"
+    },
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "forwardPorts": [3000, 54321, 54322, 54323],
+  "portsAttributes": {
+    "3000": { "label": "Next.js Dev Server" },
+    "54321": { "label": "Supabase API" },
+    "54322": { "label": "Supabase DB" },
+    "54323": { "label": "Supabase Studio" }
+  },
+  "postCreateCommand": "npm install && npx supabase --version",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "bradlc.vscode-tailwindcss",
+        "Prisma.prisma",
+        "supabase.vscode-supabase",
+        "github.copilot"
+      ],
+      "settings": {
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "esbenp.prettier-vscode",
+        "typescript.tsdk": "node_modules/typescript/lib"
+      }
+    }
+  },
+  "remoteEnv": {
+    "NEXT_PUBLIC_SUPABASE_URL": "${localEnv:NEXT_PUBLIC_SUPABASE_URL}",
+    "NEXT_PUBLIC_SUPABASE_ANON_KEY": "${localEnv:NEXT_PUBLIC_SUPABASE_ANON_KEY}",
+    "SUPABASE_SERVICE_ROLE_KEY": "${localEnv:SUPABASE_SERVICE_ROLE_KEY}",
+    "SHOCKBALL_API_KEY": "${localEnv:SHOCKBALL_API_KEY}"
+  }
+}
