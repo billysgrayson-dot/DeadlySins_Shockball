@@ -9,8 +9,13 @@
  * Energy recovery model:
  *   Players need ~3 days of rest to fully recover from a low-energy match.
  *   If the last match was 3+ days ago, we treat all players as recovered.
+ *
+ * Energy sourcing:
+ *   We look across the last 5 replayed DS matches so bench players from
+ *   the most recent match still show their energy from an earlier game.
  */
 
+import Link from 'next/link'
 import { createServerClient } from '@/lib/supabase/client'
 
 // Always server-render — data changes with every sync
@@ -35,6 +40,8 @@ interface PlayerStat {
 
 interface EnergySnap {
   player_id: string
+  match_id: string
+  match_date: string
   turn: number
   energy: number
   penalty_tier: string
@@ -69,7 +76,7 @@ interface RecentMatch {
 async function getDashboardData() {
   const db = createServerClient()
 
-  const [playersResult, latestMatchResult, upcomingResult, recentMatchesResult] =
+  const [playersResult, dsMatchesResult, upcomingResult, recentMatchesResult] =
     await Promise.all([
       db
         .from('player_career_stats')
@@ -77,14 +84,14 @@ async function getDashboardData() {
           'player_id, player_name, team_id, matches_played, total_goals, total_shots, total_tackles, career_shot_conversion'
         )
         .eq('team_id', DS_TEAM_ID),
+      // Expand to last 5 replayed DS matches so bench players still show energy
       db
         .from('matches')
-        .select('id, scheduled_time, home_team_id, away_team_id, home_score, away_score')
+        .select('id, scheduled_time')
         .eq('involves_deadly_sins', true)
         .eq('replay_fetched', true)
         .order('scheduled_time', { ascending: false })
-        .limit(1)
-        .maybeSingle(),
+        .limit(5),
       db.from('upcoming_deadly_sins_matches').select('*').limit(10),
       db
         .from('matches')
@@ -96,7 +103,7 @@ async function getDashboardData() {
     ])
 
   const players: PlayerStat[] = playersResult.data ?? []
-  const latestMatch = latestMatchResult.data
+  const dsMatches = dsMatchesResult.data ?? []
   const upcomingMatches: UpcomingMatch[] = (upcomingResult.data ?? []) as UpcomingMatch[]
   const recentMatches: RecentMatch[] = recentMatchesResult.data ?? []
 
@@ -114,22 +121,50 @@ async function getDashboardData() {
     (teamsData ?? []).map((t) => [t.id, t.name])
   )
 
-  // Get final energy per player from the latest replay-fetched match
-  let energyByPlayer: Record<string, EnergySnap> = {}
-  if (latestMatch) {
-    const { data: snapshots } = await db
-      .from('energy_snapshots')
-      .select('player_id, turn, energy, penalty_tier')
-      .eq('match_id', latestMatch.id)
-      .order('player_id')
-      .order('turn', { ascending: false })
+  // Get final energy per player across the last 5 replayed DS matches.
+  // Fetch all 5 matches in parallel, then deduplicate by player keeping
+  // the entry from the most recent match (matches are ordered newest-first).
+  const energyByPlayer: Record<string, EnergySnap> = {}
 
-    for (const snap of snapshots ?? []) {
-      if (!energyByPlayer[snap.player_id]) {
-        energyByPlayer[snap.player_id] = snap
+  if (dsMatches.length > 0) {
+    const snapshotResults = await Promise.all(
+      dsMatches.map((m) =>
+        db
+          .from('energy_snapshots')
+          .select('player_id, turn, energy, penalty_tier')
+          .eq('match_id', m.id)
+          .order('player_id')
+          .order('turn', { ascending: false })
+      )
+    )
+
+    // dsMatches is newest-first, so the first match each player appears in
+    // is their most recent match — don't overwrite once set.
+    for (let i = 0; i < dsMatches.length; i++) {
+      const match = dsMatches[i]
+      const snapshots = snapshotResults[i].data ?? []
+      const seenInMatch = new Set<string>()
+
+      for (const snap of snapshots) {
+        // First occurrence per player = highest turn (due to desc ordering) = final energy
+        if (!seenInMatch.has(snap.player_id)) {
+          seenInMatch.add(snap.player_id)
+          if (!energyByPlayer[snap.player_id]) {
+            energyByPlayer[snap.player_id] = {
+              player_id: snap.player_id,
+              match_id: match.id,
+              match_date: match.scheduled_time,
+              turn: snap.turn,
+              energy: snap.energy,
+              penalty_tier: snap.penalty_tier,
+            }
+          }
+        }
       }
     }
   }
+
+  const latestMatch = dsMatches[0] ?? null
 
   return { players, latestMatch, energyByPlayer, upcomingMatches, recentMatches, teamNames }
 }
@@ -221,59 +256,63 @@ function EnergyBar({ energy }: { energy: number | null }) {
 interface PlayerCardProps {
   player: PlayerStat
   snap: EnergySnap | null
-  daysSinceMatch: number
 }
 
-function PlayerCard({ player, snap, daysSinceMatch }: PlayerCardProps) {
+function PlayerCard({ player, snap }: PlayerCardProps) {
   const energy = snap?.energy ?? null
-  const rec = getRecommendation(energy, daysSinceMatch)
+  const days = snap ? daysSince(snap.match_date) : Infinity
+  const rec = getRecommendation(energy, days)
   const avgGoals =
     player.total_goals !== null && player.matches_played > 0
       ? (player.total_goals / player.matches_played).toFixed(2)
       : '—'
 
   return (
-    <div className="rounded-lg border border-gray-800 bg-gray-900 p-4 flex flex-col gap-3">
-      {/* Header row */}
-      <div className="flex items-start justify-between gap-2">
-        <div>
-          <p className="font-semibold text-white leading-tight">{player.player_name}</p>
-          <p className="text-xs text-gray-500 mt-0.5">{player.matches_played} matches</p>
-        </div>
-        <span
-          className={`shrink-0 rounded px-2 py-0.5 text-xs font-bold tracking-wide ${rec.color} ${rec.bg}`}
-        >
-          {rec.label}
-        </span>
-      </div>
-
-      {/* Energy bar */}
-      <div className="flex flex-col gap-1">
-        <div className="flex items-center justify-between text-xs">
-          <span className="text-gray-400">Last energy</span>
-          <span className={getEnergyTextColor(energy)}>
-            {energy !== null ? `${energy} — ${getEnergyLabel(energy)}` : 'No data'}
+    <Link href={`/players/${player.player_id}`} className="block">
+      <div className="rounded-lg border border-gray-800 bg-gray-900 p-4 flex flex-col gap-3 hover:border-gray-600 transition-colors">
+        {/* Header row */}
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <p className="font-semibold text-white leading-tight">{player.player_name}</p>
+            <p className="text-xs text-gray-500 mt-0.5">{player.matches_played} matches</p>
+          </div>
+          <span
+            className={`shrink-0 rounded px-2 py-0.5 text-xs font-bold tracking-wide ${rec.color} ${rec.bg}`}
+          >
+            {rec.label}
           </span>
         </div>
-        <EnergyBar energy={energy} />
-      </div>
 
-      {/* Career stats */}
-      <div className="grid grid-cols-3 gap-1 text-center">
-        <div>
-          <p className="text-xs text-gray-500">Goals</p>
-          <p className="text-sm font-medium text-gray-200">{player.total_goals ?? 0}</p>
+        {/* Energy bar */}
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-gray-400">
+              {snap ? `Last energy (${Math.floor(days)}d ago)` : 'Last energy'}
+            </span>
+            <span className={getEnergyTextColor(energy)}>
+              {energy !== null ? `${energy} — ${getEnergyLabel(energy)}` : 'No data'}
+            </span>
+          </div>
+          <EnergyBar energy={energy} />
         </div>
-        <div>
-          <p className="text-xs text-gray-500">Shots</p>
-          <p className="text-sm font-medium text-gray-200">{player.total_shots ?? 0}</p>
-        </div>
-        <div>
-          <p className="text-xs text-gray-500">G/Match</p>
-          <p className="text-sm font-medium text-gray-200">{avgGoals}</p>
+
+        {/* Career stats */}
+        <div className="grid grid-cols-3 gap-1 text-center">
+          <div>
+            <p className="text-xs text-gray-500">Goals</p>
+            <p className="text-sm font-medium text-gray-200">{player.total_goals ?? 0}</p>
+          </div>
+          <div>
+            <p className="text-xs text-gray-500">Shots</p>
+            <p className="text-sm font-medium text-gray-200">{player.total_shots ?? 0}</p>
+          </div>
+          <div>
+            <p className="text-xs text-gray-500">G/Match</p>
+            <p className="text-sm font-medium text-gray-200">{avgGoals}</p>
+          </div>
         </div>
       </div>
-    </div>
+    </Link>
   )
 }
 
@@ -298,24 +337,26 @@ function MatchResult({
   }
 
   return (
-    <div className="flex items-center justify-between rounded-lg border border-gray-800 bg-gray-900 px-4 py-3">
-      <div>
-        <p className="text-sm font-medium text-gray-200">
-          {isHome ? 'vs ' : '@ '}{oppName}
-        </p>
-        <p className="text-xs text-gray-500 mt-0.5">{formatDateShort(match.scheduled_time)}</p>
-      </div>
-      <div className="text-right">
-        <span className={`text-lg font-bold ${resultColor}`}>{resultLabel}</span>
-        {dsScore !== null && oppScore !== null && (
-          <p className="text-xs text-gray-400">
-            {isHome
-              ? `${dsScore} – ${oppScore}`
-              : `${oppScore} – ${dsScore}`}
+    <Link href={`/matches/${match.id}`} className="block">
+      <div className="flex items-center justify-between rounded-lg border border-gray-800 bg-gray-900 px-4 py-3 hover:border-gray-600 transition-colors">
+        <div>
+          <p className="text-sm font-medium text-gray-200">
+            {isHome ? 'vs ' : '@ '}{oppName}
           </p>
-        )}
+          <p className="text-xs text-gray-500 mt-0.5">{formatDateShort(match.scheduled_time)}</p>
+        </div>
+        <div className="text-right">
+          <span className={`text-lg font-bold ${resultColor}`}>{resultLabel}</span>
+          {dsScore !== null && oppScore !== null && (
+            <p className="text-xs text-gray-400">
+              {isHome
+                ? `${dsScore} – ${oppScore}`
+                : `${oppScore} – ${dsScore}`}
+            </p>
+          )}
+        </div>
       </div>
-    </div>
+    </Link>
   )
 }
 
@@ -329,10 +370,11 @@ export default async function DashboardPage() {
 
   const days = latestMatch ? daysSince(latestMatch.scheduled_time) : Infinity
 
-  // Sort players into lineup groups
+  // Sort players into lineup groups using per-player match date for recovery
   const withRec = players.map((p) => {
     const snap = energyByPlayer[p.player_id] ?? null
-    const rec = getRecommendation(snap?.energy ?? null, days)
+    const playerDays = snap ? daysSince(snap.match_date) : Infinity
+    const rec = getRecommendation(snap?.energy ?? null, playerDays)
     return { player: p, snap, rec }
   })
 
@@ -355,13 +397,16 @@ export default async function DashboardPage() {
             <span className="ml-2 text-base font-normal text-gray-500">Coaching Dashboard</span>
           </h1>
           <p className="mt-1 text-sm text-gray-500">
-            Energy data from last replayed match:{' '}
+            Latest replayed match:{' '}
             <span className="text-gray-400">{lastSyncDate}</span>
             {days < Infinity && (
               <span className="ml-2 text-gray-600">
                 ({Math.floor(days)}d ago — {days >= 3 ? 'all players estimated recovered' : 'recent, use data carefully'})
               </span>
             )}
+          </p>
+          <p className="mt-0.5 text-xs text-gray-600">
+            Energy sourced from last 5 replayed matches. Click a player or match for details.
           </p>
         </div>
 
@@ -401,7 +446,7 @@ export default async function DashboardPage() {
                   </h3>
                   <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                     {starters.map(({ player, snap }) => (
-                      <PlayerCard key={player.player_id} player={player} snap={snap} daysSinceMatch={days} />
+                      <PlayerCard key={player.player_id} player={player} snap={snap} />
                     ))}
                   </div>
                 </div>
@@ -416,7 +461,7 @@ export default async function DashboardPage() {
                   </h3>
                   <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                     {monitors.map(({ player, snap }) => (
-                      <PlayerCard key={player.player_id} player={player} snap={snap} daysSinceMatch={days} />
+                      <PlayerCard key={player.player_id} player={player} snap={snap} />
                     ))}
                   </div>
                 </div>
@@ -431,7 +476,7 @@ export default async function DashboardPage() {
                   </h3>
                   <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                     {resting.map(({ player, snap }) => (
-                      <PlayerCard key={player.player_id} player={player} snap={snap} daysSinceMatch={days} />
+                      <PlayerCard key={player.player_id} player={player} snap={snap} />
                     ))}
                   </div>
                 </div>
@@ -446,7 +491,7 @@ export default async function DashboardPage() {
                   </h3>
                   <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                     {unknown.map(({ player, snap }) => (
-                      <PlayerCard key={player.player_id} player={player} snap={snap} daysSinceMatch={days} />
+                      <PlayerCard key={player.player_id} player={player} snap={snap} />
                     ))}
                   </div>
                 </div>
