@@ -12,7 +12,7 @@ export const maxDuration = 30
 
 export async function POST(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   const authHeader = req.headers.get('authorization')
   const cronSecret = process.env.CRON_SECRET
@@ -21,6 +21,7 @@ export async function POST(
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  const result = await syncMatchReplay(params.id)
-  return NextResponse.json({ ...result, matchId: params.id })
+  const { id } = await params
+  const result = await syncMatchReplay(id)
+  return NextResponse.json({ ...result, matchId: id })
 }

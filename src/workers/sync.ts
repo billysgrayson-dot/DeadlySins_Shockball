@@ -61,7 +61,7 @@ async function upsertMatch(
 
   // Upsert competition, conference, league if present
   if (match.competition) {
-    await db.from('competitions').upsert(
+    const { error: compError } = await db.from('competitions').upsert(
       {
         id: match.competition.id,
         name: match.competition.name,
@@ -70,22 +70,25 @@ async function upsertMatch(
         start_date: match.competition.startDate ?? null,
         season: match.competition.season ?? null,
       },
-      { onConflict: 'id', ignoreDuplicates: true }
+      { onConflict: 'id', ignoreDuplicates: false }
     )
+    if (compError) console.error(`[sync] Failed to upsert competition ${match.competition.id}:`, compError)
   }
 
   if (match.conference) {
-    await db.from('conferences').upsert(
+    const { error: confError } = await db.from('conferences').upsert(
       { id: match.conference.id, name: match.conference.name },
-      { onConflict: 'id', ignoreDuplicates: true }
+      { onConflict: 'id', ignoreDuplicates: false }
     )
+    if (confError) console.error(`[sync] Failed to upsert conference ${match.conference.id}:`, confError)
   }
 
   if (match.league) {
-    await db.from('leagues').upsert(
+    const { error: leagueError } = await db.from('leagues').upsert(
       { id: match.league.id, name: match.league.name },
-      { onConflict: 'id', ignoreDuplicates: true }
+      { onConflict: 'id', ignoreDuplicates: false }
     )
+    if (leagueError) console.error(`[sync] Failed to upsert league ${match.league.id}:`, leagueError)
   }
 
   const { error } = await db.from('matches').upsert(

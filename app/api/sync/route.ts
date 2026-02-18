@@ -45,11 +45,36 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// GET endpoint to check sync status + rate limit health
+// GET endpoint — runs sync when called by Vercel cron (authorised),
+// otherwise returns rate-limit status for manual health checks.
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization')
   const cronSecret = process.env.CRON_SECRET
 
+  const isAuthorised = cronSecret && authHeader === `Bearer ${cronSecret}`
+
+  if (isAuthorised) {
+    try {
+      console.log('[/api/sync GET] Starting match sync (cron)...')
+      const results = await syncMatches()
+      const rateLimit = getRateLimitStatus()
+      console.log('[/api/sync GET] Sync complete:', results)
+      return NextResponse.json({
+        success: true,
+        results,
+        rateLimit,
+        timestamp: new Date().toISOString(),
+      })
+    } catch (err) {
+      console.error('[/api/sync GET] Sync failed:', err)
+      return NextResponse.json(
+        { success: false, error: String(err) },
+        { status: 500 }
+      )
+    }
+  }
+
+  // No / wrong secret — return rate-limit status only
   if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }

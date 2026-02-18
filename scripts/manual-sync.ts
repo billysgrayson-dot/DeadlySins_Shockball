@@ -14,7 +14,7 @@ import { getRateLimitStatus } from '../src/lib/shockball/client'
 
 // Load .env.local
 import { config } from 'dotenv'
-config({ path: '.env.local' })
+config({ path: '.env.local', override: true })
 
 const args = process.argv.slice(2)
 const matchArg = args.find(a => a.startsWith('--match='))
