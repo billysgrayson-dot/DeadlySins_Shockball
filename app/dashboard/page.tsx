@@ -399,31 +399,28 @@ function MatchResult({ match, teamNames }: { match: RecentMatch; teamNames: Reco
   }
 
   return (
-    <Link href={`/matches/${match.id}`} className="block">
-      <div className="flex items-center justify-between rounded-lg border border-gray-800 bg-gray-900 px-4 py-3 hover:border-gray-600 transition-colors">
-        <div>
-          <p className="text-sm font-medium text-gray-200">{isHome ? 'vs ' : '@ '}{oppName}</p>
-          <p className="text-xs text-gray-500 mt-0.5">{formatDateShort(match.scheduled_time)}</p>
-        </div>
-        <div className="flex items-center gap-3">
-          <Link
-            href={`/scouting/${oppId}`}
-            onClick={e => e.stopPropagation()}
-            className="text-xs text-gray-600 hover:text-gray-400 transition-colors"
-          >
-            Scout →
-          </Link>
-          <div className="text-right">
-            <span className={`text-lg font-bold ${resultColor}`}>{resultLabel}</span>
-            {dsScore !== null && oppScore !== null && (
-              <p className="text-xs text-gray-400">
-                {isHome ? `${dsScore} – ${oppScore}` : `${oppScore} – ${dsScore}`}
-              </p>
-            )}
-          </div>
-        </div>
+    <div className="flex items-center justify-between rounded-lg border border-gray-800 bg-gray-900 px-4 py-3 hover:border-gray-600 transition-colors">
+      <Link href={`/matches/${match.id}`} className="flex-1 min-w-0">
+        <p className="text-sm font-medium text-gray-200">{isHome ? 'vs ' : '@ '}{oppName}</p>
+        <p className="text-xs text-gray-500 mt-0.5">{formatDateShort(match.scheduled_time)}</p>
+      </Link>
+      <div className="flex items-center gap-3">
+        <Link
+          href={`/scouting/${oppId}`}
+          className="text-xs text-gray-600 hover:text-gray-400 transition-colors"
+        >
+          Scout →
+        </Link>
+        <Link href={`/matches/${match.id}`} className="text-right">
+          <span className={`text-lg font-bold ${resultColor}`}>{resultLabel}</span>
+          {dsScore !== null && oppScore !== null && (
+            <p className="text-xs text-gray-400">
+              {isHome ? `${dsScore} – ${oppScore}` : `${oppScore} – ${dsScore}`}
+            </p>
+          )}
+        </Link>
       </div>
-    </Link>
+    </div>
   )
 }
 
